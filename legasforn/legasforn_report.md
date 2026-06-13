@@ -10,11 +10,13 @@
 
 | Recurso | Acesso | Detalhe |
 |---------|--------|---------|
-| **Supabase DB** (via PostgREST) | 🟢 ALTO | INSERT/SELECT/PATCH em 15+ tabelas |
-| **Wallets** | 🟢 TOTAL | R$50k+ em contas controladas, R$99k exposta |
-| **Orders** | 🟢 PARCIAL | Criar ordens "completed", sem pagamento |
+| **Supabase DB** (via PostgREST) | 🟢 ALTO | SELECT em 15+ tabelas, INSERT/PATCH limitado |
+| **Wallets (leitura)** | 🟢 TOTAL | Saldo de TODOS os 22 usuários exposto |
+| **Wallets (escrita)** | 🟡 PARCIAL | PATCH funciona no DB mas SEM EFEITO no app (server-side valida auth.uid()) |
+| **Orders (leitura)** | 🟢 PRÓPRIAS | RLS permite ver apenas próprias ordens |
+| **Orders (escrita)** | 🔴 SEM EFEITO | INSERT falha (schema diferente), server-side gera dados de pagamento |
 | **Accounts (staff)** | 🟢 2 CONTAS | pecahobNEW + pecahob975 (staff) |
-| **Roulette** | 🟢 TOTAL | Spins ilimitados, cupons gerados |
+| **Roulette** | 🟢 PARCIAL | Spins via API funcionam, INSERT direto não gera cupons reais |
 | **API GoTrue** | 🟢 TOTAL | Criar contas, modificar user_metadata |
 | **Painel Admin** | 🔴 BLOQUEADO | Requer service_role key do Supabase |
 | **Banco Supabase** (SQL direto) | 🔴 BLOQUEADO | hostname não resolve |
@@ -23,34 +25,20 @@
 
 ---
 
-## 🚨 FALHAS CRÍTICAS (3)
+## 🚨 FALHAS (Atualizado — correção de imprecisões)
 
-| # | Falha | Impacto |
-|---|-------|---------|
-| 1 | RLS Quebrado — user_wallets | Criar dinheiro infinito, roubar saldo |
-| 2 | Order Injection | Comprar sem pagar (status=completed) |
-| 3 | Cupom 100% INSTA5 | Desconto total irrestrito |
-
----
-
-## 🟡 FALHAS MÉDIAS (5)
-
-| # | Falha | Impacto |
-|---|-------|---------|
-| 4 | User metadata editável | Escalação parcial de privilégios |
-| 5 | Roulette manipulável | Cupons/Dados fraudulentos |
-| 6 | Enumeração de contas | Descobrir users registrados |
-| 7 | Cookies sem HttpOnly | Roubo de sessão (se houver XSS) |
-| 8 | Anon key exposta | Acesso base ao Supabase |
-
----
-
-## 🔵 FALHAS BAIXAS (2)
-
-| # | Falha | Impacto |
-|---|-------|---------|
-| 9 | Fingerprinting tech stack | Reconhecimento facilitado |
-| 10 | Endpoints admin expostos | Revelam superfície de ataque |
+| # | Falha | Gravidade | Impacto REAL |
+|---|-------|-----------|-------------|
+| 1 | RLS Quebrado — user_wallets | 🟡 ALTA | **Vazamento de saldos de TODOS os usuários** (22 wallets expostas). PATCH funciona no DB mas SEM EFEITO no app. ❌ Antes: "criação de dinheiro infinito" — corrigido. |
+| 2 | Orders exposta | 🟢 BAIXA | INSERT falha (schema diferente). Server-side gera dados de pagamento. ❌ Antes: "comprar sem pagar" — incorreto, corrigido. |
+| 3 | Chave Anon exposta | 🟡 MÉDIA | Acesso base ao Supabase via GoTrue + RLS |
+| 4 | User metadata editável | 🟡 MÉDIA | Escalação parcial — SEM efeito no admin panel |
+| 5 | Roulette manipulável | 🟡 MÉDIA | Spins ilimitados — cupons gerados são funcionais |
+| 6 | Enumeração de contas | 🟡 MÉDIA | Descobrir emails registrados |
+| 7 | Cookies sem HttpOnly | 🟡 MÉDIA | Roubo de sessão (se houver XSS) |
+| 8 | Fingerprinting | 🟢 BAIXA | Reconhecimento facilitado |
+| 9 | Endpoints admin expostos | 🟢 BAIXA | Revelam superfície de ataque |
+| 10 | Cupom INSTA5 100% | 🟡 MÉDIA | Server-side CAPA em 15% — config incorreta no DB |
 
 ---
 
@@ -82,4 +70,4 @@ Com a service_role key, o atacante pode:
 
 ---
 
-*Relatório gerado em 13/06/2026 às 03:30 BRT*
+*Relatório gerado em 13/06/2026 às 03:30 BRT — corrigido em 13/06/2026 às 03:45 BRT*

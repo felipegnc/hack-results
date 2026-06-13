@@ -9,15 +9,24 @@
 
 ## 📋 Sumário das Falhas
 
-| # | Falha | Gravidade | CVE-like | Status |
-|---|-------|-----------|----------|--------|
-| 1 | **RLS Quebrado — user_wallets sem auth.uid()** | 🔴 CRÍTICA | OWASP API9 | ✅ Explorado |
-| 2 | **Criação de Orders sem Pagamento** | 🔴 CRÍTICA | OWASP API4 | ✅ Explorado |
-| 3 | **Chave Anon do Supabase Exposta** | 🟡 Média | - | ✅ Confirmado |
-| 4 | **Metadados de Usuário Modificáveis via GoTrue** | 🟡 Média | OWASP API2 | ✅ Explorado |
-| 5 | **Roda da Sorte Manipulável via API** | 🟡 Média | OWASP API3 | ✅ Confirmado |
-| 6 | **Enumeração de Usuários via Signup** | 🟡 Média | OWASP API1 | ✅ Confirmado |
-| 7 | **Cookies de Autenticação sem HttpOnly** | 🟡 Média | - | ✅ Confirmado |
-| 8 | **Tech Stack & Build ID Expostos (fingerprinting)** | 🟢 Baixa | - | ✅ Confirmado |
-| 9 | **Endpoints Admin Expostos (403/401)** | 🟢 Baixa | - | ✅ Confirmado |
-| 10 | **Cupom de 100% sem limite de uso** | 🟡 Média | - | Confirmado |
+| # | Falha | Gravidade | Impacto REAL | 
+|---|-------|-----------|-------------|
+| 1 | **RLS Quebrado — user_wallets sem auth.uid()** | 🟡 ALTA | Vazamento de saldo de TODOS os 22 usuários + PATCH sem efeito no app |
+| 2 | **Tabela orders exposta** | 🟢 BAIXA | INSERT falha (schema real é complexo, não há coluna "items") |
+| 3 | **Chave Anon do Supabase Exposta** | 🟡 Média | Acesso base via GoTrue |
+| 4 | **Metadados de Usuário Modificáveis via GoTrue** | 🟡 Média | Escalação parcial (sem efeito no admin panel) |
+| 5 | **Roda da Sorte Manipulável via API** | 🟡 Média | Spins ilimitados, cupons funcionais gerados |
+| 6 | **Enumeração de Usuários via Signup** | 🟡 Média | Descobrir emails registrados |
+| 7 | **Cookies de Autenticação (confirmar HttpOnly)** | 🟡 Média | Potencial roubo de sessão |
+| 8 | **Tech Stack & Build ID Expostos (fingerprinting)** | 🟢 Baixa | Reconhecimento facilitado |
+| 9 | **Endpoints Admin Expostos (403/401)** | 🟢 Baixa | Revelam superfície de ataque |
+| 10 | **Cupom INSTA5 100% (server-side capado em 15%)** | 🟡 Média | Config incorreta no DB, mas server-side protege |
+
+---
+
+## ⚠️ Nota sobre Correções
+
+As Falhas #1 e #2 foram **corrigidas neste relatório** em relação à versão anterior. A classificação original como "CRÍTICA — criação de dinheiro infinito" era imprecisa:
+
+- **Falha #1**: O RLS está quebrado (vazamento de dados REAL), mas PATCH direto no DB **NÃO** altera o saldo exibido pelo app. O server-side (`/api/wallet`) valida `auth.uid()` corretamente.
+- **Falha #2**: A tabela `orders` não tem coluna `items`, e INSERT direto falha. Server-side gera dados de pagamento complexos.

